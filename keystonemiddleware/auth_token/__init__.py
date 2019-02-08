@@ -573,9 +573,11 @@ class AuthProtocol(BaseAuthProtocol):
             'include_service_catalog')
         self._hash_algorithms = self._conf.get('hash_algorithms')
 
-        self._auth = self._create_auth_plugin()
-        self._session = self._create_session()
-        self._identity_server = self._create_identity_server()
+        self._auth = self._create_auth_plugin(self._conf, log)
+        self._session = self._create_session(self._conf)
+        self._identity_server = self._create_identity_server(self._session,
+                                                             self._auth,
+                                                             self._conf, log)
 
         self._www_authenticate_uri = self._conf.get('www_authenticate_uri')
         if not self._www_authenticate_uri:
@@ -876,34 +878,33 @@ class AuthProtocol(BaseAuthProtocol):
             self._SIGNING_CA_FILE_NAME,
             self._identity_server.fetch_ca_cert())
 
-    def _create_auth_plugin(self):
+    @staticmethod
+    def _create_auth_plugin(conf, log, auth_url=None):
         # NOTE(jamielennox): Ideally this would use load_from_conf_options
         # however that is not possible because we have to support the override
         # pattern we use in _conf.get. This function therefore does a manual
         # version of load_from_conf_options with the fallback plugin inline.
 
-        group = self._conf.get('auth_section') or _base.AUTHTOKEN_GROUP
+        group = conf.get('auth_section') or _base.AUTHTOKEN_GROUP
 
         # NOTE(jamielennox): auth_plugin was deprecated to auth_type. _conf.get
         # doesn't handle that deprecation in the case of conf dict options so
         # we have to manually check the value
-        plugin_name = (self._conf.get('auth_type', group=group)
-                       or self._conf.paste_overrides.get('auth_plugin'))
+        plugin_name = (conf.get('auth_type', group=group)
+                       or conf.paste_overrides.get('auth_plugin'))
 
         if not plugin_name:
             return _auth.AuthTokenPlugin(
-                log=self.log,
-                auth_admin_prefix=self._conf.get('auth_admin_prefix',
-                                                 group=group),
-                auth_host=self._conf.get('auth_host', group=group),
-                auth_port=self._conf.get('auth_port', group=group),
-                auth_protocol=self._conf.get('auth_protocol', group=group),
-                identity_uri=self._conf.get('identity_uri', group=group),
-                admin_token=self._conf.get('admin_token', group=group),
-                admin_user=self._conf.get('admin_user', group=group),
-                admin_password=self._conf.get('admin_password', group=group),
-                admin_tenant_name=self._conf.get('admin_tenant_name',
-                                                 group=group)
+                log=log,
+                auth_admin_prefix=conf.get('auth_admin_prefix', group=group),
+                auth_host=conf.get('auth_host', group=group),
+                auth_port=conf.get('auth_port', group=group),
+                auth_protocol=conf.get('auth_protocol', group=group),
+                identity_uri=conf.get('identity_uri', group=group),
+                admin_token=conf.get('admin_token', group=group),
+                admin_user=conf.get('admin_user', group=group),
+                admin_password=conf.get('admin_password', group=group),
+                admin_tenant_name=conf.get('admin_tenant_name', group=group)
             )
 
         # Plugin option registration is normally done as part of the load_from
@@ -911,40 +912,55 @@ class AuthProtocol(BaseAuthProtocol):
         plugin_loader = loading.get_plugin_loader(plugin_name)
         plugin_opts = loading.get_auth_plugin_conf_options(plugin_loader)
 
-        self._conf.oslo_conf_obj.register_opts(plugin_opts, group=group)
-        getter = lambda opt: self._conf.get(opt.dest, group=group)
+        conf.oslo_conf_obj.register_opts(plugin_opts, group=group)
+        _conf = conf
+        if auth_url:
+
+            # NOTE(jrbalderrama) 'deepcopy' is not available before py37
+            # https://docs.python.org/3/whatsnew/3.7.html#re shadow copy
+            # looks to work good enough tough
+            target_conf = copy.copy(_conf)
+            target_conf.oslo_conf_obj.set_override('auth_url',
+                                                   auth_url,
+                                                   group=group)
+            _conf = target_conf
+
+        getter = lambda opt: _conf.get(opt.dest, group=group)
         return plugin_loader.load_from_options_getter(getter)
 
-    def _create_session(self, **kwargs):
+    @staticmethod
+    def _create_session(conf, **kwargs):
         # NOTE(jamielennox): Loading Session here should be exactly the
         # same as calling Session.load_from_conf_options(CONF, GROUP)
         # however we can't do that because we have to use _conf.get to
         # support the paste.ini options.
-        kwargs.setdefault('cert', self._conf.get('certfile'))
-        kwargs.setdefault('key', self._conf.get('keyfile'))
-        kwargs.setdefault('cacert', self._conf.get('cafile'))
-        kwargs.setdefault('insecure', self._conf.get('insecure'))
-        kwargs.setdefault('timeout', self._conf.get('http_connect_timeout'))
-        kwargs.setdefault('user_agent', self._conf.user_agent)
+        kwargs.setdefault('cert', conf.get('certfile'))
+        kwargs.setdefault('key', conf.get('keyfile'))
+        kwargs.setdefault('cacert', conf.get('cafile'))
+        kwargs.setdefault('insecure', conf.get('insecure'))
+        kwargs.setdefault('timeout', conf.get('http_connect_timeout'))
+        kwargs.setdefault('user_agent', conf.user_agent)
 
         return session_loading.Session().load_from_options(**kwargs)
 
-    def _create_identity_server(self):
+    @staticmethod
+    def _create_identity_server(session, auth, conf, log):
+        # keystoneauth1.adapter.Adapter
         adap = adapter.Adapter(
-            self._session,
-            auth=self._auth,
+            session,
+            auth=auth,
             service_type='identity',
             interface='admin',
-            region_name=self._conf.get('region_name'),
-            connect_retries=self._conf.get('http_request_max_retries'))
+            region_name=conf.get('region_name'),
+            connect_retries=conf.get('http_request_max_retries'))
 
-        auth_version = self._conf.get('auth_version')
+        auth_version = conf.get('auth_version')
         if auth_version is not None:
             auth_version = discover.normalize_version_number(auth_version)
         return _identity.IdentityServer(
-            self.log,
+            log,
             adap,
-            include_service_catalog=self._include_service_catalog,
+            include_service_catalog=conf.get('include_service_catalog'),
             requested_auth_version=auth_version)
 
     def _create_oslo_cache(self):
