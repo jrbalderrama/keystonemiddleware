@@ -578,6 +578,10 @@ class AuthProtocol(BaseAuthProtocol):
         self._identity_server = self._create_identity_server(self._session,
                                                              self._auth,
                                                              self._conf, log)
+        self._credentials = { self._conf.get('auth_url'):
+                              (self._auth,
+                               self._session,
+                               self._identity_server) }
 
         self._www_authenticate_uri = self._conf.get('www_authenticate_uri')
         if not self._www_authenticate_uri:
@@ -610,6 +614,28 @@ class AuthProtocol(BaseAuthProtocol):
         self._check_revocations_for_cached = self._conf.get(
             'check_revocations_for_cached')
 
+    @classmethod
+    def _get_credentials(cls, conf, log, credentials, auth_url, instance_name):
+        _credentials = credentials.get(auth_url)
+        if _credentials:
+            return _credentials
+        else:
+            # NOTE(jrbalderrama) 'deepcopy' is not available before python 3.7
+            # https://docs.python.org/3/whatsnew/3.7.html#re shadow copy instead
+            _conf = copy.copy(conf)
+            _conf.oslo_conf_obj.set_override('auth_url', auth_url,
+                                             group=_base.AUTHTOKEN_GROUP)
+            _conf.oslo_conf_obj.set_override('region_name', instance_name,
+                                             group=_base.AUTHTOKEN_GROUP)
+            _auth = cls._create_auth_plugin(_conf, log)
+            _session = cls._create_session(_conf)
+            _identity_server = \
+                cls._create_identity_server(_session, _auth, _conf, log)
+            credentials.update( { auth_url:
+                                  (_auth, _session,
+                                   _identity_server) } )
+            return (_auth, _session, _identity_server)
+
     def process_request(self, request):
         """Process request.
 
@@ -620,6 +646,21 @@ class AuthProtocol(BaseAuthProtocol):
         """
         request.remove_auth_headers()
         self._token_cache.initialize(request.environ)
+
+        _original_auth_url = self._conf.get('auth_url')
+        _auth_url = request.headers.get('X-Identity-Url',
+                                        _original_auth_url)
+        _instance_name = request.headers.get('X-Identity-Region')
+        _credentials = self._get_credentials(self._conf,
+                                             self.log,
+                                             self._credentials,
+                                             _auth_url,
+                                             _instance_name)
+        self._auth = _credentials[0]
+        self._session = _credentials[1]
+        self._identity_server = _credentials[2]
+        self._www_authenticate_uri = _original_auth_url \
+            if _auth_url == _original_auth_url else _auth_url
 
         resp = super(AuthProtocol, self).process_request(request)
         if resp:
@@ -879,7 +920,7 @@ class AuthProtocol(BaseAuthProtocol):
             self._identity_server.fetch_ca_cert())
 
     @staticmethod
-    def _create_auth_plugin(conf, log, auth_url=None):
+    def _create_auth_plugin(conf, log):
         # NOTE(jamielennox): Ideally this would use load_from_conf_options
         # however that is not possible because we have to support the override
         # pattern we use in _conf.get. This function therefore does a manual
@@ -913,19 +954,7 @@ class AuthProtocol(BaseAuthProtocol):
         plugin_opts = loading.get_auth_plugin_conf_options(plugin_loader)
 
         conf.oslo_conf_obj.register_opts(plugin_opts, group=group)
-        _conf = conf
-        if auth_url:
-
-            # NOTE(jrbalderrama) 'deepcopy' is not available before py37
-            # https://docs.python.org/3/whatsnew/3.7.html#re shadow copy
-            # looks to work good enough tough
-            target_conf = copy.copy(_conf)
-            target_conf.oslo_conf_obj.set_override('auth_url',
-                                                   auth_url,
-                                                   group=group)
-            _conf = target_conf
-
-        getter = lambda opt: _conf.get(opt.dest, group=group)
+        getter = lambda opt: conf.get(opt.dest, group=group)
         return plugin_loader.load_from_options_getter(getter)
 
     @staticmethod
