@@ -578,10 +578,11 @@ class AuthProtocol(BaseAuthProtocol):
         self._identity_server = self._create_identity_server(self._session,
                                                              self._auth,
                                                              self._conf, log)
-        self._credentials = { self._conf.get('auth_url'):
-                              (self._auth,
-                               self._session,
-                               self._identity_server) }
+        self._local_credentials = (self._auth,
+                                   self._session,
+                                   self._identity_server)
+
+        self._extra_credentials = {}
 
         self._www_authenticate_uri = self._conf.get('www_authenticate_uri')
         if not self._www_authenticate_uri:
@@ -615,26 +616,29 @@ class AuthProtocol(BaseAuthProtocol):
             'check_revocations_for_cached')
 
     @classmethod
-    def _get_credentials(cls, conf, log, credentials, auth_url, instance_name):
+    def _get_credentials(cls, conf, log, credentials,
+                              auth_url, instance_name):
+
         _credentials = credentials.get(auth_url)
         if _credentials:
             return _credentials
-        else:
-            # NOTE(jrbalderrama) 'deepcopy' is not available before python 3.7
-            # https://docs.python.org/3/whatsnew/3.7.html#re shadow copy instead
-            _conf = copy.copy(conf)
-            _conf.oslo_conf_obj.set_override('auth_url', auth_url,
-                                             group=_base.AUTHTOKEN_GROUP)
-            _conf.oslo_conf_obj.set_override('region_name', instance_name,
-                                             group=_base.AUTHTOKEN_GROUP)
-            _auth = cls._create_auth_plugin(_conf, log)
-            _session = cls._create_session(_conf)
-            _identity_server = \
-                cls._create_identity_server(_session, _auth, _conf, log)
-            credentials.update( { auth_url:
-                                  (_auth, _session,
-                                   _identity_server) } )
-            return (_auth, _session, _identity_server)
+
+        # NOTE(jrbalderrama) 'deepcopy' is not available before python 3.7
+        # https://docs.python.org/3/whatsnew/3.7.html#re shadow copy instead
+        _conf = copy.copy(conf)
+        _conf.oslo_conf_obj.set_override('auth_url', auth_url,
+                                         group=_base.AUTHTOKEN_GROUP)
+        _conf.oslo_conf_obj.set_override('region_name', instance_name,
+                                         group=_base.AUTHTOKEN_GROUP)
+        _auth = cls._create_auth_plugin(_conf, log)
+        _session = cls._create_session(_conf)
+        _identity_server = \
+            cls._create_identity_server(_session, _auth, _conf, log)
+        credentials.update( { auth_url:
+                              (_auth, _session,
+                               _identity_server) } )
+        return (_auth, _session, _identity_server)
+
 
     def process_request(self, request):
         """Process request.
@@ -644,23 +648,23 @@ class AuthProtocol(BaseAuthProtocol):
         request for use by applications. If not authenticated the request will
         be rejected or marked unauthenticated depending on configuration.
         """
-        request.remove_auth_headers()
-        self._token_cache.initialize(request.environ)
-
-        _original_auth_url = self._conf.get('auth_url')
-        _auth_url = request.headers.get('X-Identity-Url',
-                                        _original_auth_url)
+        _auth_url = request.headers.get('X-Identity-Url')
         _instance_name = request.headers.get('X-Identity-Region')
-        _credentials = self._get_credentials(self._conf,
-                                             self.log,
-                                             self._credentials,
-                                             _auth_url,
-                                             _instance_name)
+        if _auth_url:
+            _credentials = self._get_credentials(self._conf,
+                                                 self.log,
+                                                 self._extra_credentials,
+                                                 _auth_url,
+                                                 _instance_name)
+        else:
+            _credentials = self._local_credentials
+
         self._auth = _credentials[0]
         self._session = _credentials[1]
         self._identity_server = _credentials[2]
-        self._www_authenticate_uri = _original_auth_url \
-            if _auth_url == _original_auth_url else _auth_url
+
+        request.remove_auth_headers()
+        self._token_cache.initialize(request.environ)
 
         resp = super(AuthProtocol, self).process_request(request)
         if resp:
