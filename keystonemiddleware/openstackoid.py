@@ -55,9 +55,10 @@ from keystoneauth1.session import Session
 from keystoneauth1.adapter import Adapter
 from keystonemiddleware.auth_token import _identity
 
+
 # Keystone clients
-# ...) of one instance (e.g., InstanceOne) since we make it global?
 K_CLIENTS = {}
+
 
 def make_admin_auth(instance_auth_url, log):
     """Build a new Authentication plugin for admin (Password based).
@@ -110,12 +111,12 @@ def make_keystone_client(instance_name, session, log):
     # if auth_version is not None:
     #     auth_version = discover.normalize_version_number(auth_version)
 
-    k_client = _identity.IdentityServer(log, adapter)
+    # Set `include_service_catalog` to true so that the HTTP_X_SERVICE_CATALOG
+    # is filled with the catalog. Thus a `RequestContext` object (such as Nova
+    # `context`) will use that information to get the list of endpoints.
+    k_client = _identity.IdentityServer(log, adapter, include_service_catalog=True)
     log.debug("Success keystone client on %s" % k_client.www_authenticate_uri)
 
-    # XXX: Is it really needed?
-    # include_service_catalog=conf.get('include_service_catalog'),
-    # requested_auth_version=auth_version)
     return k_client
 
 
@@ -181,10 +182,12 @@ def target_good_keystone(f):
         # instance (i.e., `instance_auth_url`)..
         (auth, sess, k_client) = get_admin_keystone_client(
             instance_auth_url, instance_name, kls.log)
+
         kls._auth = auth
         kls._session = sess
         kls._identity_server = k_client
         kls._www_authenticate_uri = instance_auth_url
+        kls._include_service_catalog = True
 
         return f(kls, request)
 
