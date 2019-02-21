@@ -6,11 +6,13 @@
 #     /_/
 # Make your OpenStacks Collaborative
 #
-# See
+# Useful links:
+# - https://docs.openstack.org/keystonemiddleware/rocky/
+# - https://github.com/openstack/keystonemiddleware/blob/e37bbe0a116689043e8c3ec8867bbb3eae062093/keystonemiddleware/auth_token/__init__.py#L611
 # - https://docs.openstack.org/keystoneauth/rocky/index.html
-"""Keystone middleware decorator for OpenStackoid.
+"""Keystone middleware decorator for OpenStackoïd.
 
-Keystone middleware got a Keystone client in its state variables, e.g.
+Keystone middleware got a Keystone client in its instance variables, e.g.
 `_identity_server`. The Keystone client is instantiated at construction time
 using information in service configuration file, e.g. in ``nova.conf``:
 
@@ -39,7 +41,7 @@ its true. The request to Keystone CloudOne made by Keystone client will be
 catch by HAProxy and forwared to CloudTwo. Unfortunately, the request comes
 with a token for the service (the X-Service-Token header) and that one is
 scoped to the local Keystone. Hence, we need to build a new client to the good
-Keystone in order to craft a good token.
+Keystone in order to craft the good token.
 
 The `target_good_keystone` decorator changes the `_identity_server` in a
 BaseAuthProtocol middleware to target the good Keystone based on the scope.
@@ -106,7 +108,7 @@ def make_keystone_client(cloud_name, session, log):
         interface='admin',
         region_name=cloud_name)
 
-    # XXX: Is it really needed?
+    # XXX(rcherrueau): Is it really needed?
     # auth_version = conf.get('auth_version')
     # if auth_version is not None:
     #     auth_version = discover.normalize_version_number(auth_version)
@@ -192,3 +194,43 @@ def target_good_keystone(f):
         return f(kls, request)
 
     return wrapper
+
+# # -- 🐒 Monkey Patching 🐒
+# from keystoneauth1.access import service_catalog as sc
+#
+# endpoint_data_for = sc.ServiceCatalog.endpoint_data_for
+# def mkeypatch_endpoint_data_for(cls, *args, **kwargs):
+#     """Don't filter the catalog on region name when looking for endpoint.
+#
+#     The `endpoint_data_for` method [1] of keystoneauth1 fetches endpoint data
+#     from the service catalog. This method may filter endpoints based on the
+#     region name. Thus, when a service such a Nova wanna contact Neutron, it
+#     uses that method to look into the catalog and only keep endpoints of
+#     Neutron in the same region (see, nova.network.neutronV2.api.get_client
+#     [2]).
+#
+#     However with OpenStackoïd, the Identity server of the current composition
+#     may be in a different region than Nova. This is the case when Alice start a
+#     VM with the following scope:
+#
+#       openstack server create ... --os-scope '{"identity": "CloudOne", "nova": "CloudTwo"}'
+#
+#     In this case, Keystone will return a scoped-token with a catalog made of
+#     endpoints in CloudOne. Hence, when Nova try to get the list of endpoints of
+#     its region, it fails with the error message:
+#
+#       ['internal', 'public'] endpoint for network service in CloudTwo region not found
+#
+#     With OpenStackoïd, the notion of regions doesn't really make sense since we
+#     permit collaboration between multiple regions. This monkey patch removes
+#     the region filtering when a service seeks for an endpoint in the service
+#     catalog.
+#
+#     Refs:
+#       [1] https://github.com/openstack/keystoneauth/blob/8505f37124bb21f41e346a571057c8133f9ca4d5/keystoneauth1/access/service_catalog.py#L402
+#       [2] https://github.com/openstack/nova/blob/3310c3cbf534f5d75477ed206a8fb68eb53c6c10/nova/network/neutronv2/api.py#L203
+#
+#     """
+#     kwargs.update(region_name=None)
+#     return endpoint_data_for(cls, *args, **kwargs)
+# sc.ServiceCatalog.endpoint_data_for = mkeypatch_endpoint_data_for
