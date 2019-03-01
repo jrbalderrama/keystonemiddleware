@@ -98,7 +98,7 @@ def make_admin_auth(cloud_auth_url, log):
     log.debug("Authentication plugin %s" % vars(auth))
     return auth
 
-def make_keystone_client(cloud_name, session, log):
+def make_keystone_client(cloud_name, session, os_scope, log):
     log.debug("New keystone client for %s in %s"
               % (session.auth.auth_url, cloud_name))
 
@@ -106,7 +106,9 @@ def make_keystone_client(cloud_name, session, log):
         session=session,
         service_type='identity',
         interface='admin',
-        region_name=cloud_name)
+        region_name=cloud_name,
+        # Tells adapter to add the scope
+        additional_headers={"X-Scope": os_scope})
 
     # XXX(rcherrueau): Is it really needed?
     # auth_version = conf.get('auth_version')
@@ -122,7 +124,7 @@ def make_keystone_client(cloud_name, session, log):
     return k_client
 
 
-def get_admin_keystone_client(cloud_auth_url, cloud_name, log):
+def get_admin_keystone_client(cloud_auth_url, cloud_name, os_scope, log):
     """Get or Lazily create a keystone client on `cloud_auth_url`.
 
     Lookup into `K_CLIENTS` for a keystone client on `cloud_auth_url`.
@@ -143,8 +145,8 @@ def get_admin_keystone_client(cloud_auth_url, cloud_name, log):
     """
     if cloud_auth_url not in K_CLIENTS:
         auth = make_admin_auth(cloud_auth_url, log)
-        sess = Session(auth=auth)
-        k_client = make_keystone_client(cloud_name, sess, log)
+        sess = Session(auth=auth, additional_headers={"X-Scope": os_scope})
+        k_client = make_keystone_client(cloud_name, sess, os_scope, log)
 
         K_CLIENTS[cloud_auth_url] = (auth, sess, k_client)
 
@@ -175,6 +177,7 @@ def target_good_keystone(f):
         original_auth_url = kls._conf.get('auth_url')
         cloud_auth_url = request.headers.get('X-Identity-Url', original_auth_url)
         cloud_name = request.headers.get('X-Identity-Cloud')
+        os_scope = request.headers.get('X-Scope')
 
         # Get the proper Keystone client and unpdate `kls` middleware in
         # regards.
@@ -183,13 +186,15 @@ def target_good_keystone(f):
         # Hence, we can rely on admin user to connect to Keystone of another
         # cloud (i.e., `cloud_auth_url`)..
         (auth, sess, k_client) = get_admin_keystone_client(
-            cloud_auth_url, cloud_name, kls.log)
+            cloud_auth_url, cloud_name, os_scope, kls.log)
 
         kls._auth = auth
         kls._session = sess
         kls._identity_server = k_client
         kls._www_authenticate_uri = cloud_auth_url
         kls._include_service_catalog = True
+
+        # import ipdb; ipdb.set_trace()
 
         return f(kls, request)
 
