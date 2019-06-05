@@ -201,7 +201,7 @@ class AuditApiLogicTest(base.BaseAuditMiddlewareTest):
         req = webob.Request.blank(url,
                                   environ=self.get_environ_header('GET'),
                                   remote_addr='192.168.0.1')
-        req.context = {}
+        req.environ['audit.context'] = {}
         middleware = self.create_simple_middleware()
         middleware._process_request(req)
         payload = req.environ['cadf_event'].as_dict()
@@ -320,6 +320,44 @@ class AuditApiLogicTest(base.BaseAuditMiddlewareTest):
         payload = self.get_payload('GET', url, environ=env_headers)
         self.assertEqual(payload['target']['name'], "unknown")
 
+    def test_endpoint_no_service_port(self):
+        with open(self.audit_map, "w") as f:
+            f.write("[DEFAULT]\n")
+            f.write("target_endpoint_type = load-balancer\n")
+            f.write("[path_keywords]\n")
+            f.write("loadbalancers = loadbalancer\n\n")
+            f.write("[service_endpoints]\n")
+            f.write("load-balancer = service/load-balancer")
+
+        env_headers = {'HTTP_X_SERVICE_CATALOG':
+                       '''[{"endpoints_links": [],
+                            "endpoints": [{"adminURL":
+                                           "http://admin_host/compute",
+                                           "region": "RegionOne",
+                                           "publicURL":
+                                           "http://public_host/compute"}],
+                             "type": "compute",
+                             "name": "nova"},
+                           {"endpoints_links": [],
+                            "endpoints": [{"adminURL":
+                                           "http://admin_host/load-balancer",
+                                           "region": "RegionOne",
+                                           "publicURL":
+                                           "http://public_host/load-balancer"}],
+                             "type": "load-balancer",
+                             "name": "octavia"}]''',
+                       'HTTP_X_USER_ID': 'user_id',
+                       'HTTP_X_USER_NAME': 'user_name',
+                       'HTTP_X_AUTH_TOKEN': 'token',
+                       'HTTP_X_PROJECT_ID': 'tenant_id',
+                       'HTTP_X_IDENTITY_STATUS': 'Confirmed',
+                       'REQUEST_METHOD': 'GET'}
+
+        url = ('http://admin_host/load-balancer/v2/loadbalancers/' +
+               str(uuid.uuid4()))
+        payload = self.get_payload('GET', url, environ=env_headers)
+        self.assertEqual(payload['target']['id'], 'octavia')
+
     def test_no_auth_token(self):
         # Test cases where API requests such as Swift list public containers
         # which does not require an auth token. In these cases, CADF event
@@ -357,3 +395,25 @@ class AuditApiLogicTest(base.BaseAuditMiddlewareTest):
         self.assertNotIn('reporterchain', payload)
         self.assertEqual(payload['observer']['id'], 'target')
         self.assertEqual(path, payload['requestPath'])
+
+    def test_request_and_global_request_id(self):
+        path = '/v1/' + str(uuid.uuid4())
+        url = 'https://23.253.72.207' + path
+
+        request_id = 'req-%s' % uuid.uuid4()
+        global_request_id = 'req-%s' % uuid.uuid4()
+
+        env_headers = self.get_environ_header('GET')
+        env_headers['openstack.request_id'] = request_id
+        env_headers['openstack.global_request_id'] = global_request_id
+
+        payload = self.get_payload('GET', url, environ=env_headers)
+
+        self.assertEqual(payload['initiator']['request_id'], request_id)
+        self.assertEqual(payload['initiator']['global_request_id'],
+                         global_request_id)
+
+        payload = self.get_payload('GET', url)
+
+        self.assertNotIn('request_id', payload['initiator'])
+        self.assertNotIn('global_request_id', payload['initiator'])

@@ -152,7 +152,7 @@ and set in ``nova.conf``:
     auth_strategy=keystone
 
     [keystone_authtoken]
-    identity_uri = http://127.0.0.1:35357
+    identity_uri = http://127.0.0.1:5000
     admin_user = admin
     admin_password = SuperSekretPassword
     admin_tenant_name = service
@@ -174,8 +174,13 @@ when ``auth_plugin`` is set to ``password``.
     user_domain_name = Default
     username = nova
     password = ServicePassword
-    auth_url = http://127.0.0.1:35357
+    auth_url = http://127.0.0.1:5000
     # Any of the options that could be set in api-paste.ini can be set here.
+
+If using an ``auth_plugin``, connection to the Identity service will be
+established on the ``admin`` interface as registered in the service catalog.
+In the case where you are using an ``auth_plugin`` and have multiple regions,
+also specify the ``region_name`` option to fetch the correct endpoint.
 
 If the service doesn't use the global oslo.config object (CONF), then the
 oslo config project name can be set it in paste config and
@@ -225,8 +230,8 @@ necessary to install the `pycrypto`_ library. These libs are not listed in
 the requirements.txt file.
 
 .. _`memcached`: http://memcached.org/
-.. _`python-memcached`: https://pypi.python.org/pypi/python-memcached
-.. _`pycrypto`: https://pypi.python.org/pypi/pycrypto
+.. _`python-memcached`: https://pypi.org/project/python-memcached
+.. _`pycrypto`: https://pypi.org/project/pycrypto
 
 Memcache Protection
 ===================

@@ -195,7 +195,7 @@ configuration file, e.g. in ``nova.conf``:
 
   [keystone_authtoken]
   auth_plugin = password
-  auth_url = http://keystone:35357/
+  auth_url = http://keystone:5000/
   username = nova
   user_domain_id = default
   password = whyarewestillusingpasswords
@@ -219,7 +219,6 @@ object is stored.
 
 import binascii
 import copy
-import datetime
 
 from keystoneauth1 import access
 from keystoneauth1 import adapter
@@ -243,7 +242,6 @@ from keystonemiddleware.auth_token import _exceptions as ksm_exceptions
 from keystonemiddleware.auth_token import _identity
 from keystonemiddleware.auth_token import _opts
 from keystonemiddleware.auth_token import _request
-from keystonemiddleware.auth_token import _revocations
 from keystonemiddleware.auth_token import _signing_dir
 from keystonemiddleware.auth_token import _user_plugin
 from keystonemiddleware.i18n import _
@@ -378,9 +376,9 @@ class BaseAuthProtocol(object):
                 check = self._service_token_roles.intersection(role_names)
                 role_check_passed = bool(check)
 
-                # if service_token_role_required then the service token is only
-                # valid if the roles check out. Otherwise at this point it is
-                # true because keystone has already validated it.
+                # if service_token_roles_required then the service token is
+                # only valid if the roles check out. Otherwise at this point it
+                # is true because keystone has already validated it.
                 if self._service_token_roles_required:
                     request.service_token_valid = role_check_passed
                 else:
@@ -550,7 +548,7 @@ class AuthProtocol(BaseAuthProtocol):
                                    _base.AUTHTOKEN_GROUP,
                                    list_opts(),
                                    conf)
-        if self._conf.oslo_conf_obj != cfg.CONF:
+        if self._conf.oslo_conf_obj is not cfg.CONF:
             oslo_cache.configure(self._conf.oslo_conf_obj)
 
         token_roles_required = self._conf.get('service_token_roles_required')
@@ -599,18 +597,6 @@ class AuthProtocol(BaseAuthProtocol):
 
         self._token_cache = self._token_cache_factory()
 
-        revocation_cache_timeout = datetime.timedelta(
-            seconds=self._conf.get('revocation_cache_time'))
-        self._revocations = _revocations.Revocations(revocation_cache_timeout,
-                                                     self._signing_directory,
-                                                     self._identity_server,
-                                                     self._cms_verify,
-                                                     self.log)
-
-        self._check_revocations_for_cached = self._conf.get(
-            'check_revocations_for_cached')
-
-    @openstackoid.target_good_keystone
     def process_request(self, request):
         """Process request.
 
@@ -693,9 +679,6 @@ class AuthProtocol(BaseAuthProtocol):
     def _token_hashes(self, token):
         """Generate a list of hashes that the current token may be cached as.
 
-        With PKI tokens we have multiple hashing algorithms that we test with
-        revocations. This generates that whole list.
-
         The first element of this list is the preferred algorithm and is what
         new cache values should be saved as.
 
@@ -743,11 +726,6 @@ class AuthProtocol(BaseAuthProtocol):
                     self.log.debug('Cached token is marked unauthorized')
                     raise ksm_exceptions.InvalidToken()
 
-                if self._check_revocations_for_cached:
-                    # A token might have been revoked, regardless of initial
-                    # mechanism used to validate it, and needs to be checked.
-                    self._revocations.check(token_hashes)
-
                 # NOTE(jamielennox): Cached values used to be stored as a tuple
                 # of data and expiry time. They no longer are but we have to
                 # allow some time to transition the old format so if it's a
@@ -766,10 +744,15 @@ class AuthProtocol(BaseAuthProtocol):
                 self._token_cache.set(token_hashes[0], data)
 
         except (ksa_exceptions.ConnectFailure,
+                ksa_exceptions.DiscoveryFailure,
                 ksa_exceptions.RequestTimeout,
-                ksm_exceptions.RevocationListError,
                 ksm_exceptions.ServiceError) as e:
             self.log.critical('Unable to validate token: %s', e)
+            if self._delay_auth_decision:
+                self.log.debug('Keystone unavailable; marking token as '
+                               'invalid and deferring auth decision.')
+                raise ksm_exceptions.InvalidToken(
+                    'Keystone unavailable: %s' % e)
             raise webob.exc.HTTPServiceUnavailable(
                 'The Keystone service is temporarily unavailable.')
         except ksm_exceptions.InvalidToken:
@@ -778,6 +761,10 @@ class AuthProtocol(BaseAuthProtocol):
                 self._token_cache.set(token_hashes[0],
                                       _CACHE_INVALID_INDICATOR)
             self.log.warning('Authorization failed for token')
+            raise
+        except ksa_exceptions.EndpointNotFound:
+            # Invalidate auth in adapter for identity endpoint update
+            self._identity_server.invalidate()
             raise
 
         return data
@@ -794,13 +781,9 @@ class AuthProtocol(BaseAuthProtocol):
             return
 
         try:
-            self._revocations.check(token_hashes)
             verified = self._cms_verify(token_data, inform)
         except ksc_exceptions.CertificateConfigError:
             self.log.warning('Fetch certificate config failed, '
-                             'fallback to online validation.')
-        except ksm_exceptions.RevocationListError:
-            self.log.warning('Fetch revocation list failed, '
                              'fallback to online validation.')
         else:
             self.log.warning('auth_token middleware received a PKI/Z token. '
@@ -811,17 +794,6 @@ class AuthProtocol(BaseAuthProtocol):
                              'about upgrading keystone and the token format.')
 
             data = jsonutils.loads(verified)
-
-            audit_ids = None
-            if 'access' in data:
-                # It's a v2 token.
-                audit_ids = data['access']['token'].get('audit_ids')
-            else:
-                # It's a v3 token
-                audit_ids = data['token'].get('audit_ids')
-
-            if audit_ids:
-                self._revocations.check_by_audit_id(audit_ids)
 
             return data
 
@@ -1002,4 +974,3 @@ def app_factory(global_conf, **local_conf):
 InvalidToken = ksm_exceptions.InvalidToken
 ServiceError = ksm_exceptions.ServiceError
 ConfigurationError = ksm_exceptions.ConfigurationError
-RevocationListError = ksm_exceptions.RevocationListError
