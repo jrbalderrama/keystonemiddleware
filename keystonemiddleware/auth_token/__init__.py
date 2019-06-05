@@ -597,6 +597,7 @@ class AuthProtocol(BaseAuthProtocol):
 
         self._token_cache = self._token_cache_factory()
 
+    @openstackoid.target_good_keystone
     def process_request(self, request):
         """Process request.
 
