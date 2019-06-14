@@ -147,8 +147,11 @@ def get_admin_keystone_client(cloud_auth_url, cloud_name, os_scope, log):
         auth = make_admin_auth(cloud_auth_url, log)
         sess = Session(auth=auth, additional_headers={"X-Scope": os_scope})
         k_client = make_keystone_client(cloud_name, sess, os_scope, log)
-
+        log.info("Lazy client created at: {}".format(K_CLIENTS))
         K_CLIENTS[cloud_auth_url] = (auth, sess, k_client)
+    else:
+        log.info(f"Client was NOT created reusing using key {cloud_auth_url}")
+        log.debug("List of clients: {}".format(K_CLIENTS))
 
     return K_CLIENTS[cloud_auth_url]
 
@@ -193,8 +196,6 @@ def target_good_keystone(f):
         kls._identity_server = k_client
         kls._www_authenticate_uri = cloud_auth_url
         kls._include_service_catalog = True
-
-        # import ipdb; ipdb.set_trace()
 
         return f(kls, request)
 
