@@ -246,6 +246,8 @@ from keystonemiddleware.auth_token import _signing_dir
 from keystonemiddleware.auth_token import _user_plugin
 from keystonemiddleware.i18n import _
 
+from openstackoid import keystonemiddleware as oid_keystonemiddleware
+
 
 _LOG = logging.getLogger(__name__)
 _CACHE_INVALID_INDICATOR = 'invalid'
@@ -595,6 +597,7 @@ class AuthProtocol(BaseAuthProtocol):
 
         self._token_cache = self._token_cache_factory()
 
+    @oid_keystonemiddleware.target_good_keystone
     def process_request(self, request):
         """Process request.
 
